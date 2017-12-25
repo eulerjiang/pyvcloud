@@ -2137,7 +2137,8 @@ class VCA(object):
             netmask,
             dns1,
             dns2,
-            dns_suffix):
+            dns_suffix,
+            fence_mode="natRouted"):
         """
         Request the creation of an new network within a vdc.
 
@@ -2154,10 +2155,12 @@ class VCA(object):
 
         """
         vdc = self.get_vdc(vdc_name)
-        gateway = ReferenceType(
-            href=self.get_gateway(
-                vdc_name, gateway_name).me.href)
-        gateway.original_tagname_ = "EdgeGateway"
+        gateway = None
+        if gateway_name is not None and gateway_name != "":
+            gateway = ReferenceType(
+                href=self.get_gateway(
+                    vdc_name, gateway_name).me.href)
+            gateway.original_tagname_ = "EdgeGateway"
 
         iprange = IpRangeType(StartAddress=start_address,
                               EndAddress=end_address)
@@ -2172,7 +2175,7 @@ class VCA(object):
         ipscopes = IpScopesType(IpScope=[ipscope])
 
         configuration = NetworkConfigurationType(IpScopes=ipscopes,
-                                                 FenceMode="natRouted")
+                                                 FenceMode=fence_mode)
         net = OrgVdcNetworkType(
             name=network_name,
             Description="Network created by pyvcloud",
