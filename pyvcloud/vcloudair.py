@@ -1614,7 +1614,11 @@ class VCA(object):
                 return False
         vapp = self.get_vapp(self.vdc, vapp_name)
         if vapp:
-            return vapp.delete()
+            task = vapp.delete()
+            if task:
+                return self.block_until_completed(task)
+            else:
+                return False
         Log.debug(self.logger, "no vApp")
 
     def get_catalogs(self):
