@@ -1537,6 +1537,167 @@ class VCA(object):
                                             'catalog': catalog_name,
                                             'name': vm_name}])
 
+    def create_vapp_from_template(self, vdc_name, vapp_name, template_name, catalog_name,
+                                  vm_specs=None, deploy='false',
+                                  poweron='false'):
+        """
+        Create a new vApp from vApp template in a virtual data center.
+
+        A vApp is an application package containing 1 or more virtual machines and their required operating system.
+
+        :param vdc_name: (str): The virtual data center name.
+        :param vapp_name: (str): The name of the new vapp.
+        :param template_name: (str): The name of a template from a catalog that will be used to create the vApp.
+        :param catalog_name: (str): The name of the catalog that contains the named template.
+        :param vm_name: (str, optional): The name of the Virtual Machine contained in the vApp.
+        :param deploy: (bool): True to deploy the vApp immediately after creation, False otherwise.
+        :param poweron: (bool): True to poweron the vApp immediately after deployment, False otherwise.
+        :return: (task): a :class:`pyvcloud.schema.vcd.v1_5.schemas.admin.vCloudEntities.TaskType`, a handle to the asynchronous process executing the request.
+
+        **service type:**. ondemand, subscription, vcd
+
+        """
+        self.vdc = self.get_vdc(vdc_name)
+        if not self.vcloud_session or not self.vcloud_session.organization or not self.vdc:
+            #"Select an organization and datacenter first"
+            return False
+
+        compose_params = self._create_templateVAppParams(template_name, catalog_name, vapp_name, vdc_name, vm_specs, deploy=deploy, power=poweron)
+
+        output = StringIO()
+        compose_params.export(
+            output,
+            0,
+            name_='InstantiateVAppTemplateParams',
+            namespacedef_='''xmlns="http://www.vmware.com/vcloud/v1.5" xmlns:ovf="http://schemas.dmtf.org/ovf/envelope/1"
+                               xmlns:rasd="http://schemas.dmtf.org/wbem/wscim/1/cim-schema/2/CIM_ResourceAllocationSettingData"''',
+            pretty_print=False)
+        body = '<?xml version="1.0" encoding="UTF-8"?>' + \
+            output.getvalue().replace('class:', 'rasd:')\
+            .replace(' xmlns:vmw="http://www.vmware.com/vcloud/v1.5"', '')\
+            .replace('vmw:', 'rasd:')\
+            .replace('Info>', "ovf:Info>")\
+            .replace('ovf:GuestCustomizationSection', 'GuestCustomizationSection')\
+            .replace('ovf:NetworkConfigSection', 'NetworkConfigSection')\
+            .replace('ovf:NetworkConnectionSection', 'NetworkConnectionSection')
+        content_type = "application/vnd.vmware.vcloud.instantiateVAppTemplateParams+xml"
+        link = filter(lambda link: link.get_type() ==
+                      content_type, self.vdc.get_Link())
+
+        #print("create vapp with instantiateVAppTemplateParams api")
+        #print(body)
+
+        self.response = Http.post(
+            link[0].get_href(),
+            headers=self.vcloud_session.get_vcloud_headers(),
+            verify=self.verify,
+            data=body,
+            logger=self.logger)
+        if self.response.status_code == requests.codes.created:
+            vApp = vAppType.parseString(self.response.content, True)
+            task = vApp.get_Tasks().get_Task()[0]
+            return task
+        else:
+            error = errorType.parseString(self.response.content, True)
+            raise Exception(error.message)
+
+    def _create_templateVAppParams(self, template, catalog, name, vdc_name, vm_specs, power, deploy):
+        instantiationParams = vcloudType.InstantiationParamsType()
+        template_vapp_href = self.get_template_vapp_href(catalog, template)
+        source = vcloudType.ReferenceType(href=template_vapp_href)
+
+        composeParams = vcloudType.InstantiateVAppTemplateParamsType(
+            InstantiationParams=instantiationParams)
+
+        composeParams.set_name(name)
+        composeParams.set_deploy(deploy)
+        composeParams.set_powerOn(power)
+        composeParams.set_AllEULAsAccepted("true")
+        composeParams.set_Source(source)
+        if vm_specs != None:
+            for vm_spec in vm_specs:
+                network_name = None
+                if "network_name" in vm_spec:
+                    network_name = vm_spec.get("network_name")
+                    # del vm_spec["network_name"]
+                params = self.get_instantiation_vm_params(vdc_name, network_name, vm_spec)
+                composeParams.add_SourcedItem(params)
+
+        return composeParams
+
+    def get_template_vapp_href(self, catalog_name, template_name):
+
+        catalogs = filter(lambda link: catalog_name == link.get_name() and link.get_type(
+        ) == "application/vnd.vmware.vcloud.catalog+xml",
+            self.vcloud_session.organization.get_Link())
+        if len(catalogs) == 1:
+            self.response = Http.get(
+                catalogs[0].get_href(),
+                headers=self.vcloud_session.get_vcloud_headers(),
+                verify=self.verify,
+                logger=self.logger)
+            if self.response.status_code == requests.codes.ok:
+                catalog = catalogType.parseString(self.response.content, True)
+                catalog_items = filter(
+                    lambda catalogItemRef: catalogItemRef.get_name() == template_name,
+                    catalog.get_CatalogItems().get_CatalogItem())
+                if len(catalog_items) == 1:
+                    self.response = Http.get(
+                        catalog_items[0].get_href(),
+                        headers=self.vcloud_session.get_vcloud_headers(),
+                        verify=self.verify,
+                        logger=self.logger)
+                    # use ElementTree instead because none of the types inside resources (not
+                    # even catalogItemType) is able to parse the response
+                    # correctly
+                    catalogItem = ET.fromstring(self.response.content)
+                    entity = [child for child in catalogItem if child.get(
+                        "type") == "application/vnd.vmware.vcloud.vAppTemplate+xml"][0]
+                    return entity.get('href'),
+
+
+    def get_template_info_from_catalog(self, catalog_name, template_name):
+
+        catalogs = filter(lambda link: catalog_name == link.get_name() and link.get_type(
+        ) == "application/vnd.vmware.vcloud.catalog+xml",
+            self.vcloud_session.organization.get_Link())
+        if len(catalogs) == 1:
+            self.response = Http.get(
+                catalogs[0].get_href(),
+                headers=self.vcloud_session.get_vcloud_headers(),
+                verify=self.verify,
+                logger=self.logger)
+            if self.response.status_code == requests.codes.ok:
+                catalog = catalogType.parseString(self.response.content, True)
+                catalog_items = filter(
+                    lambda catalogItemRef: catalogItemRef.get_name() == template_name,
+                    catalog.get_CatalogItems().get_CatalogItem())
+                if len(catalog_items) == 1:
+                    self.response = Http.get(
+                        catalog_items[0].get_href(),
+                        headers=self.vcloud_session.get_vcloud_headers(),
+                        verify=self.verify,
+                        logger=self.logger)
+                    # use ElementTree instead because none of the types inside resources (not
+                    # even catalogItemType) is able to parse the response
+                    # correctly
+                    catalogItem = ET.fromstring(self.response.content)
+                    entity = [child for child in catalogItem if child.get(
+                        "type") == "application/vnd.vmware.vcloud.vAppTemplate+xml"][0]
+                    self.response = Http.get(
+                        entity.get('href'),
+                        headers=self.vcloud_session.get_vcloud_headers(),
+                        verify=self.verify,
+                        logger=self.logger)
+                    result = []
+                    if self.response.status_code == requests.codes.ok:
+                        vAppTemplate = ET.fromstring(self.response.content)
+                        for vm in vAppTemplate.iter(
+                                '{http://www.vmware.com/vcloud/v1.5}Vm'):
+                            result.append(vm.get('name'))
+
+            return result
+
     def block_until_completed(self, task):
         """
         Wait on a task until it has completed.
